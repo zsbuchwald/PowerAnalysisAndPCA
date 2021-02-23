@@ -1,0 +1,1129 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+Created: 01/29/21
+Last modified: 01/29/21
+
+
+
+Jasons comment on CCP MEthods Jan 2021
+Do the PCA on hypothetical data combined with a retrospective power analysis
+SO FIRST do the power analysis
+In mice and humans 
+
+
+
+
+```{r load libraries, eval=TRUE, message=FALSE}
+setwd("C:/Users/Zsuzsi/Documents/Lerch/TideData_ForPaper")
+
+library(ggplot2)
+library(grid)
+library(MRIcrotome)
+library(devtools)
+library(ggfortify)
+library(fitdistrplus)
+library(MASS)
+library(splines)
+library(tidyverse)
+library(RMINC)
+library("ggpubr")
+library("lme4")
+library(lenses)
+#library("lme4", lib.loc="/axiom2/projects/software/arch/linux-xenial-xerus/RMINC/1.5.1.0") <- previously, but this errored so running above command 
+```
+
+
+
+
+#Load in all data
+
+##Mouse Behaviour
+
+```{r Mouse Behav compiled data, echo=TRUE,eval=TRUE}
+tf <- read.csv("CompiledBehavData_Tide_WithAllBehav_USE.csv")
+
+tf$Genotype <- relevel(tf$Genotype %>% as.factor(), ref="Wt")
+tf$Treatment <- relevel(tf$Treatment%>% as.factor(), ref="Placebo")
+tf$StrainW <- relevel(tf$StrainW%>% as.factor(), ref="Wt")
+
+tf0 <- subset(tf, Group != 0)
+
+with(tf, table(StrainW, Treatment))
+with(tf0, table(StrainW, Treatment))
+
+names(tf)
+```
+
+
+##Mouse Brain
+
+```{r Mouse Brain  compiled data, echo=TRUE,eval=TRUE}
+#Now (June 19, 2019)
+#Missing 6 mice from chunk 4 that had failed MAGeTs
+ADE <- read.csv("TideExVivo_AllData_nottrans.csv")
+
+ADE$Genotype <- ADE$Genotype %>% as.factor %>% relevel(., ref="Wt")
+ADE$StrainW <- ADE$StrainW %>% as.factor %>%relevel(., ref="Wt")
+ADE$Treatment <- ADE$Treatment %>% as.factor %>%relevel(., ref="Placebo")
+
+```
+
+
+#Combine mice brain & behav
+```{r Mouse Brain  compiled data, echo=TRUE,eval=TRUE}
+#Combine brain and behav
+mice <- left_join(tf, ADE, by=c("Group", "ID", "Strain", "StrainW", "Genotype", "Treatment", "GenotypeW","Cage"))
+
+
+
+#Complete cases brain
+
+micec <- mice[complete.cases(mice$Labels),] 
+
+#Complete cases behav
+micecc <- micec%>% select(Group:YMBlockedPref,amygdala:brainvolumes) %>% filter(is.na(FCHabituation)==FALSE,
+       is.na(FCPostUS)==FALSE,        
+       is.na(FCContext)==FALSE,                                              
+       is.na(FCAltContext)==FALSE,                                            
+       is.na(FCCued)==FALSE,
+       is.na(OMRatioDur)==FALSE,                                                          is.na(OMRatioFreq)==FALSE,  
+       is.na(OMDistance)==FALSE,                                                          is.na(OMMoving)==FALSE,
+       is.na(OMRawOpenDur)==FALSE,                                                        is.na(OMRawOpenFreq)==FALSE,                                                       is.na(OFCenter)==FALSE,
+       is.na(OFDist)==FALSE,                                                              is.na(YMRawStart)==FALSE,  
+       is.na(YMRawOther)==FALSE,               
+       is.na(YMBlockedPref)==FALSE) 
+                                                             
+                                                     
+
+
+
+#Better to have all variables scaled to positive end (higher numbers means good (i.e. higher latency means better memory)) so make them negative if they are not in the right direction (GrAvgDur, GrNumBouts, and RotPreTrials need to be flipped!)(the rest are good... though OFDist is debateable)
+
+
+miceccp <- micecc %>% 
+  mutate(FCHabituation2= 1-FCHabituation,
+         FCPostUS2= 1-FCPostUS,
+         FCAltContext2= 1-FCAltContext,
+         YMRawStart2= 1-YMRawStart,
+         YMRawOther2= 1- YMRawOther) %>%
+  select(-c(FCHabituation,FCPostUS,FCAltContext,YMRawStart,YMRawOther))
+
+```
+
+
+
+
+
+
+
+#POWER TEST MICE
+
+lets start with amygdala, striatum, thalamus (three regions that are fairly easily across the two species)
+
+humans are all split volumes, so just taking right to amke things easier for now:
+right.amygdala (369), right.stiatum(370), right.thalamus(372)
+
+
+lets use anxiet and memory, since those overlap the humans the most 
+#Mem, Mem2, Mem3
+  #NEPSY is split by age and only done 3-16yrs
+  #We have Nenps 3-4 (Mem3), nepsy 5-16(Mem2), and other (Mem)
+#Anx, Anx2
+  #SPENCE for young, RCADS for older
+
+We don't hav ememory so let's do hyperactivity instead: OMMoving and ABC hyperactivity subscale (4)
+
+```{r human behav- load}
+
+HBI_USE <- read.csv("Human_TIDEdata_TideBehav_USE.csv")
+
+HBI_VARS <- HBI_USE %>% select(Subject, RAND_TREATMENT, AGE_AT_ENROLLMENT, GENDER, Variant, Type,CSHQ_BEDTIME_RESIS:CSHQ_TOTAL, RCAD_SA_TSCORE:RCAD_ANXDEPTOTAL, ends_with("_TOTAL"), MD_CONTENT_SCORE:MD_CONTRAST_S_SCR,MDD_CONTENT_SCR:MD_MDD_CNTRST_S_SCR,ABC_SUBSCALE_I:ABC_SUBSCALE_V, ends_with("_STD"))%>% select(-CSHQ_SLPY_DRSNG_STD, -CSHQ_SLPY_PLY_OTH_STD,-CSHQ_SLPY_BTHRM_STD)
+
+
+
+with(HBI_VARS, table(RAND_TREATMENT))
+
+```
+
+
+
+```{r Human brain- load}
+
+HIm <- read.csv("Human_TIDEimaging_USE.csv")
+
+HI <- HIm %>% group_by(subject) %>% arrange(subject)
+
+HIU <- HI %>% mutate(Subject= gsub("-","", subject %>% gsub("MR160","",.)))
+
+HIU$Subject <- HIU$Subject %>% as.numeric()
+
+HI_USE <- HIU %>% filter(MAGeT_QC=="TRUE")
+
+
+# combine treat and image
+
+BBB2 <- HBI_USE %>% rename(Site=Site.x) %>% select(Subject:Inheritance, Site:RAND_TREATMENT) 
+
+Img <- inner_join(BBB2, HI_USE, by="Subject")
+
+nrow(Img)
+unique(Img$Subject)
+
+```
+
+
+```{r combine human brain and behav}
+
+HIL <- Img %>% filter(Point=="post") %>% filter(Sex=="M") %>% filter(QC_LITE==TRUE)
+
+
+Comb <- HIL %>% left_join(HBI_VARS, by="Subject")
+
+
+```
+
+right.amygdala (380), right.stiatum(381), right.thalamus(383)
+
+lets use anxiet and memory, since those overlap the humans the most 
+#Mem, Mem2, Mem3
+  #NEPSY is split by age and only done 3-16yrs
+  #We have Nenps 3-4 (Mem3), nepsy 5-16(Mem2), and other (Mem)
+#Anx, Anx2
+  #SPENCE for young, RCADS for older
+
+
+  
+  RCAD_ANXIETYTOTAL (436)
+  MDD_TOTAL_SCORE (457)
+  
+  FCContext
+  OFCenter
+
+```{r power analysis mice}
+
+
+micew <- miceccp %>% filter(Genotype=="Wt", Treatment=="Placebo")
+
+#OFDist, FCContext, amygdala, striatum, thalamus
+get_summary_stats(micew[,c(19,11, 23,70, 73)])
+
+dat <- get_summary_stats(micew[,c(19,11, 23,70, 73)]) %>% select(variable,mean,sd)
+
+
+
+dat$pd5 <- 0
+dat$pd10 <- 0
+dat$pd15 <- 0
+dat$pd20<- 0
+dat$pd25 <- 0
+dat$pd40 <- 0
+dat$pd50 <- 0
+dat$pd100 <- 0
+
+for (i in 1:nrow(dat)){
+  
+  mn <- dat$mean[i]
+  ssd <- dat$sd[i]
+  
+  dt <- power.t.test(n=5, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd5[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=10, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd10[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=15, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd15[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=20, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd20[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=25, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd25[i] <- dt/mn*100
+  
+      dt <- power.t.test(n=40, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd40[i] <- dt/mn*100 
+   
+    dt <- power.t.test(n=50, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd50[i] <- dt/mn*100 
+  
+      dt <- power.t.test(n=100, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd100[i] <- dt/mn*100 
+  
+}
+
+
+datl <- dat %>% pivot_longer(cols=pd5:pd100, names_to="samples",values_to="perc.diff")
+datl <- datl %>% mutate(smp= case_when(samples=="pd5"~5, 
+                        samples=="pd10"~10,
+                        samples=="pd15"~15,
+                        samples=="pd20"~20,
+                        samples=="pd25"~25,
+                        samples=="pd40"~40,
+                        samples=="pd50"~50,
+                        samples=="pd100"~100))
+
+
+
+f <- ggplot(datl, aes(y=perc.diff, x=smp, fill=variable, color=variable))
+f <- f + theme_bw(28)
+f <- f + geom_point(data=datl %>% filter(smp !=100 & perc.diff<75), aes(y=perc.diff, group=variable, fill=variable, x=smp), position = position_jitterdodge(), shape=21, size=4)  
+f <- f + xlab("Sample size") + ylab("Percent Difference")
+f <- f + scale_fill_hue(name="Variable", breaks=c("FCContext", "OFCenter", "amygdala", "striatum", "thalamus"), labels=c("Memory", "Anxiety", "Amygdala", "Striatum", "Thalamus"))
+#f <- f + geom_smooth(aes(group=variable), method="glm")
+f <- f + ggtitle("Power Analysis: Mice") +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+f <- f + theme(legend.title= element_text(size=28))
+f <- f + theme(legend.text= element_text(size=20))
+f
+
+ggsave("Tide_PowerMice.png",f, width=12, height=8)
+
+
+
+```
+
+
+#Now repeat but for humans
+
+lets start with amygdala, striatum, thalamus (three regions that are fairly easily across the two species)
+
+humans are all split volumes, so just taking right to amke things easier for now:
+right.amygdala (380), right.stiatum(381), right.thalamus(383)
+
+
+lets use anxiet and memory, since those overlap the humans the most 
+  #Mem, Mem2, Mem3
+  #NEPSY is split by age and only done 3-16yrs
+  #We have Nenps 3-4 (Mem3), nepsy 5-16(Mem2), and other (Mem)
+  
+  
+  RCAD_ANXIETYTOTAL (436)
+  MDD_TOTAL_SCORE (457)
+  
+
+```{r power analysis humans, eval=TRUE, message=FALSE}
+combw <- Comb %>% filter(RAND_TREATMENT.x=="PLACEBO")
+
+#  RCAD_ANXIETYTOTAL, ABC_SUBSCALE_IV, amygdala, striatum, thalamus
+get_summary_stats(combw[,c(380, 381, 383, 436, 457)])
+
+dat <- get_summary_stats(combw[,c(380, 381, 383, 436, 457)]) %>% select(variable,mean,sd)
+
+
+
+dat$pd5 <- 0
+dat$pd10 <- 0
+dat$pd15 <- 0
+dat$pd20<- 0
+dat$pd25 <- 0
+dat$pd40 <- 0
+dat$pd50 <- 0
+dat$pd100 <- 0
+
+for (i in 1:nrow(dat)){
+  
+  mn <- dat$mean[i]
+  ssd <- dat$sd[i]
+  
+  dt <- power.t.test(n=5, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd5[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=10, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd10[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=15, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd15[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=20, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd20[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=25, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd25[i] <- dt/mn*100
+  
+      dt <- power.t.test(n=40, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd40[i] <- dt/mn*100 
+   
+    dt <- power.t.test(n=50, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd50[i] <- dt/mn*100 
+  
+      dt <- power.t.test(n=100, sd=ssd, sig.level=0.05, power=.8)$delta
+  dat$pd100[i] <- dt/mn*100 
+  
+}
+
+
+datl <- dat %>% pivot_longer(cols=pd5:pd100, names_to="samples",values_to="perc.diff")
+datl <- datl %>% mutate(smp= case_when(samples=="pd5"~5, 
+                        samples=="pd10"~10,
+                        samples=="pd15"~15,
+                        samples=="pd20"~20,
+                        samples=="pd25"~25,
+                        samples=="pd40"~40,
+                        samples=="pd50"~50,
+                        samples=="pd100"~100))
+
+
+
+f <- ggplot(datl, aes(y=perc.diff, x=smp, fill=variable, color=variable))
+f <- f + theme_bw(28)
+f <- f + geom_point(data=datl %>% filter(smp !=100 & perc.diff<75), aes(y=perc.diff, group=variable, fill=variable, x=smp), position = position_jitterdodge(), shape=21, size=4)
+f <- f + xlab("Sample size") + ylab("Percent Difference")
+f <- f + scale_fill_hue(name="Variable", breaks=c("MDD_TOTAL_SCORE", "RCAD_ANXIETYTOTAL", "right.amygdala", "right.striatum", "right.thalamus"), labels=c("Memory", "Anxiety", "Amygdala", "Striatum", "Thalamus"))
+#f <- f + geom_smooth(aes(group=variable), method="glm")
+f <- f + ggtitle("Power Analysis: Humans") +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+f <- f + theme(legend.title= element_text(size=28))
+f <- f + theme(legend.text= element_text(size=20))
+f
+
+ggsave("Tide_PowerHumans.png",f, width=12, height=8)
+
+
+
+```
+
+##Continued power analysis on mice, comparing to literature and expanding to other behaviours
+
+```{r power analysis mice expanded, eval=TRUE, message=FALSE}
+Previous <- read.csv("FMR1BehavValidationSheet.csv") %>% filter(Study != "CCP")
+
+PA <- Previous %>% filter(Genotype=="Wt") %>% rename(mean=Mean, sd=SD, variable=Variable) %>% select(Behaviour:Study, variable, mean, sd) %>%  filter(complete.cases(sd))
+
+
+micew <- miceccp %>% filter(Genotype=="Wt", Treatment=="Placebo")
+
+#OFDist, FCContext, amygdala, striatum, thalamus, OMDistance, OFDist
+get_summary_stats(micew[,c(19,11, 23,70, 73,15,20)])
+
+dat <- get_summary_stats(micew[,c(19,11, 23,70, 73,15,20)]) %>% select(variable,mean,sd)
+
+dat$Behaviour <- c("Brain", "Memory", "Anxiety", "Brain", "Brain", "Hyperactivity", "Hyperactivity")
+dat$Test <- c("Amygdala", "FC", "Open Field", "Striatum", "Thalamus", "Omaze", "Open Field")
+dat$Study <- rep("Tideglusib", nrow(dat))
+
+PB <- rbind(PA, dat)
+
+PB <- PB %>% unite(Name, Behaviour, Study, sep="_", remove=FALSE) 
+
+
+PB$pd5 <- 0
+PB$pd10 <- 0
+PB$pd15 <- 0
+PB$pd20<- 0
+PB$pd25 <- 0
+PB$pd40 <- 0
+PB$pd50 <- 0
+PB$pd100 <- 0
+
+for (i in 1:nrow(PB)){
+  
+  mn <- PB$mean[i]
+  ssd <- PB$sd[i]
+  
+  dt <- power.t.test(n=5, sd=ssd, sig.level=0.05, power=.8)$delta
+  PB$pd5[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=10, sd=ssd, sig.level=0.05, power=.8)$delta
+  PB$pd10[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=15, sd=ssd, sig.level=0.05, power=.8)$delta
+  PB$pd15[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=20, sd=ssd, sig.level=0.05, power=.8)$delta
+  PB$pd20[i] <- dt/mn*100
+  
+    dt <- power.t.test(n=25, sd=ssd, sig.level=0.05, power=.8)$delta
+  PB$pd25[i] <- dt/mn*100
+  
+      dt <- power.t.test(n=40, sd=ssd, sig.level=0.05, power=.8)$delta
+  PB$pd40[i] <- dt/mn*100 
+   
+    dt <- power.t.test(n=50, sd=ssd, sig.level=0.05, power=.8)$delta
+  PB$pd50[i] <- dt/mn*100 
+  
+      dt <- power.t.test(n=100, sd=ssd, sig.level=0.05, power=.8)$delta
+  PB$pd100[i] <- dt/mn*100 
+  
+}
+
+
+PBl <- PB %>% pivot_longer(cols=pd5:pd100, names_to="samples",values_to="perc.diff")
+PBl <- PBl %>% mutate(smp= case_when(samples=="pd5"~5, 
+                        samples=="pd10"~10,
+                        samples=="pd15"~15,
+                        samples=="pd20"~20,
+                        samples=="pd25"~25,
+                        samples=="pd40"~40,
+                        samples=="pd50"~50,
+                        samples=="pd100"~100))
+
+
+
+
+colurs <- c("#1f78b4","#1f78b4","#fb9a99","#33a02c","#33a02c","#b2df8a","#b2df8a","#33a02c","#33a02c","#1f78b4","#1f78b4","#b2df8a" ,"#cab2d6","#cab2d6","#cab2d6","#fdbf6f","#ff7f00","#ff7f00","#ff7f00","#a6cee3","#a6cee3","#a6cee3","#a6cee3","#e31a1c","#e31a1c","#e31a1c","#e31a1c","#e31a1c","#e31a1c","#e31a1c")
+  
+  
+countryColors <- data.frame(cbind(PB$Name,colurs)) %>% rename(Country=V1)
+
+
+#colours:
+
+#a6cee3 ellegood 
+#1f78b4 impc
+#b2df8a mineur 
+#33a02c nielsen
+#fb9a99 peier
+#e31a1c tideglusib
+#fdbf6f dobkin
+#ff7f00 paradee
+#cab2d6 vanDam
+
+jColors <- countryColors$colurs
+names(jColors) <- countryColors$Country
+head(jColors)
+
+
+#seperating anxiety
+
+PBla <- PBl %>% filter(Behaviour=="Anxiety")
+
+
+f <- ggplot(PBla, aes(y=perc.diff, x=smp, fill=Name))
+f <- f + theme_bw(28)
+f <- f + geom_point(data=PBla %>% filter(smp !=100), aes(y=perc.diff, group=Name, fill=Name, x=smp), position = position_jitterdodge(), shape=21, size=4)  
+f <- f + xlab("Sample size") + ylab("Percent Difference")
+f <- f + ggtitle("Power Analysis: Anxiety in Mice") +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+f <- f + theme(legend.title= element_text(size=28))
+f <- f + scale_fill_manual(values=jColors)
+f <- f + theme(legend.text= element_text(size=20))
+f <- f + coord_cartesian(ylim=c(0,200))
+f <- f + facet_grid(~Test)
+f
+ggsave("Tide_PowerMice_Anxiety.png",f, width=12, height=8)
+
+
+
+
+
+#seperating memory
+
+PBlm <- PBl %>% filter(Behaviour=="Memory")
+
+f <- ggplot(PBlm, aes(y=perc.diff, x=smp, fill=Name))
+f <- f + theme_bw(28)
+f <- f + geom_point(data=PBlm %>% filter(smp !=100), aes(y=perc.diff, group=Name, fill=Name, x=smp), position = position_jitterdodge(), shape=21, size=4)  
+f <- f + xlab("Sample size") + ylab("Percent Difference")
+f <- f + ggtitle("Power Analysis: Memory in Mice") +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+f <- f + theme(legend.title= element_text(size=28))
+f <- f + theme(legend.text= element_text(size=20))
+f <- f + scale_fill_manual(values=jColors)
+f <- f + coord_cartesian(ylim=c(0,200))
+f
+ggsave("Tide_PowerMice_Memory.png",f, width=12, height=8)
+
+
+
+
+#seperating the rest
+
+PBlo <- PBl %>% filter(Behaviour!="Memory", Behaviour!= "Anxiety")
+
+f <- ggplot(PBlo, aes(y=perc.diff, x=smp, fill=Name))
+f <- f + theme_bw(28)
+f <- f + geom_point(data=PBlo %>% filter(smp !=100), aes(y=perc.diff, group=Name, fill=Name, x=smp), position = position_jitterdodge(), shape=21, size=4)  
+f <- f + xlab("Sample size") + ylab("Percent Difference")
+f <- f + ggtitle("Power Analysis: Brain and Hyperactivity in Mice") +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+f <- f + theme(legend.title= element_text(size=28))
+f <- f + theme(legend.text= element_text(size=20))
+f <- f + scale_fill_manual(values=jColors)
+f <- f + coord_cartesian(ylim=c(0,200))
+f <- f + facet_grid(~Behaviour)
+f
+ggsave("Tide_PowerMice_Other.png",f, width=12, height=8)
+
+
+
+
+
+
+
+
+
+
+
+```
+
+
+
+
+
+
+##PCA 
+
+
+
+
+
+
+```{r PCA 10% diff anx and amyg, eval=TRUE, message=FALSE}
+
+dfm <- data.frame(matrix(nrow=100, ncol=7))
+dfh <- data.frame(matrix(nrow=100, ncol=7))
+
+names(dfm) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+names(dfh) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+
+dfm$Subject <- c(1:nrow(dfm))
+dfm$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfm$Responder <- c(rep("Responder",10), rep("Nonresponder", 90))
+dfm$Anxiety <- c(rnorm(10, mean=34.21, sd=20.6),rnorm(90, mean=31.1, sd=20.6))
+dfm$Memory <- rnorm(nrow(dfm), mean=51.5, sd=18.6)
+dfm$Amygdala <- c(rnorm(10, mean=10.362, sd=.526),rnorm(90, mean=9.42, sd=.526))
+dfm$Striatum <- rnorm(nrow(dfm), mean=20, sd=1.09)
+dfm$Thalamus <- rnorm(nrow(dfm), mean=16.5, sd=0.917)
+
+dfh$Subject <- c(1:nrow(dfh))
+dfh$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfh$Responder <- c(rep("Responder",10), rep("Nonresponder", 90))
+dfh$Anxiety <- c(rnorm(10, mean=56.54, sd=17.7),rnorm(90, mean=51.4, sd=17.7))
+dfh$Memory <- rnorm(nrow(dfh), mean=39.8, sd=9.97)
+dfh$Amygdala <- c(rnorm(10, mean=1372.8, sd=220),rnorm(90, mean=1248, sd=220))
+dfh$Striatum <- rnorm(nrow(dfh), mean=8944, sd=1636)
+dfh$Thalamus <- rnorm(nrow(dfh), mean=6265, sd=999)
+
+
+
+
+#mice
+
+PCAb <- prcomp(dfm %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfm, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Subset treated are weak responders on two measures",atop(italic("Principle Component Analysis- Mice"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_SubsetResponders_mice_10pdanxamy.png", c, width=12, height=8)
+
+
+
+
+#humans
+
+PCAb <- prcomp(dfh %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfh, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Subset treated are weak responders on two measures",atop(italic("Principle Component Analysis- Humans"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_SubsetResponders_humans_10pdanxamy.png", c, width=12, height=8)
+
+```
+
+
+
+
+```{r PCA 40% diff anx and amyg, eval=TRUE, message=FALSE}
+
+dfm <- data.frame(matrix(nrow=100, ncol=7))
+dfh <- data.frame(matrix(nrow=100, ncol=7))
+
+names(dfm) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+names(dfh) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+
+dfm$Subject <- c(1:nrow(dfm))
+dfm$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfm$Responder <- c(rep("Responder",10), rep("Nonresponder", 90))
+dfm$Anxiety <- c(rnorm(10, mean=31.1*1.4, sd=20.6),rnorm(90, mean=31.1, sd=20.6))
+dfm$Memory <- rnorm(nrow(dfm), mean=51.5, sd=18.6)
+dfm$Amygdala <- c(rnorm(10, mean=9.42*1.4, sd=.526),rnorm(90, mean=9.42, sd=.526))
+dfm$Striatum <- rnorm(nrow(dfm), mean=20, sd=1.09)
+dfm$Thalamus <- rnorm(nrow(dfm), mean=16.5, sd=0.917)
+
+dfh$Subject <- c(1:nrow(dfh))
+dfh$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfh$Responder <- c(rep("Responder",10), rep("Nonresponder", 90))
+dfh$Anxiety <- c(rnorm(10, mean=51.4*1.4, sd=17.7),rnorm(90, mean=51.4, sd=17.7))
+dfh$Memory <- rnorm(nrow(dfh), mean=39.8, sd=9.97)
+dfh$Amygdala <- c(rnorm(10, mean=1248*1.4, sd=220),rnorm(90, mean=1248, sd=220))
+dfh$Striatum <- rnorm(nrow(dfh), mean=8944, sd=1636)
+dfh$Thalamus <- rnorm(nrow(dfh), mean=6265, sd=999)
+
+
+
+
+#mice
+
+PCAb <- prcomp(dfm %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfm, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Subset treated are strong responders on two measures",atop(italic("Principle Component Analysis- Mice"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_SubsetResponders_mice_40pdanxamy.png", c, width=12, height=8)
+
+
+
+
+#humans
+
+PCAb <- prcomp(dfh %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfh, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Subset treated are strong responders on two measures",atop(italic("Principle Component Analysis- Humans"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_SubsetResponders_humans_40pdanxamy.png", c, width=12, height=8)
+
+```
+
+
+
+
+
+
+
+
+```{r PCA 40% diff anx and amyg & most treated respond, eval=TRUE, message=FALSE}
+
+dfm <- data.frame(matrix(nrow=100, ncol=7))
+dfh <- data.frame(matrix(nrow=100, ncol=7))
+
+names(dfm) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+names(dfh) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+
+dfm$Subject <- c(1:nrow(dfm))
+dfm$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfm$Responder <- c(rep("Responder",40), rep("Nonresponder", 60))
+dfm$Anxiety <- c(rnorm(40, mean=31.1*1.4, sd=20.6),rnorm(60, mean=31.1, sd=20.6))
+dfm$Memory <- rnorm(nrow(dfm), mean=51.5, sd=18.6)
+dfm$Amygdala <- c(rnorm(40, mean=9.42*1.4, sd=.526),rnorm(60, mean=9.42, sd=.526))
+dfm$Striatum <- rnorm(nrow(dfm), mean=20, sd=1.09)
+dfm$Thalamus <- rnorm(nrow(dfm), mean=16.5, sd=0.917)
+
+dfh$Subject <- c(1:nrow(dfh))
+dfh$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfh$Responder <- c(rep("Responder",40), rep("Nonresponder", 60))
+dfh$Anxiety <- c(rnorm(40, mean=51.4*1.4, sd=17.7),rnorm(60, mean=51.4, sd=17.7))
+dfh$Memory <- rnorm(nrow(dfh), mean=39.8, sd=9.97)
+dfh$Amygdala <- c(rnorm(40, mean=1248*1.4, sd=220),rnorm(60, mean=1248, sd=220))
+dfh$Striatum <- rnorm(nrow(dfh), mean=8944, sd=1636)
+dfh$Thalamus <- rnorm(nrow(dfh), mean=6265, sd=999)
+
+
+
+
+#mice
+
+PCAb <- prcomp(dfm %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfm, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape= "Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Most treated are strong responders on two measures",atop(italic("Principle Component Analysis- Mice"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_MostResponders_mice_40pdanxamy.png", c, width=12, height=8)
+
+
+
+
+#humans
+
+PCAb <- prcomp(dfh %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfh, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Most treated are strong responders on two measures",atop(italic("Principle Component Analysis- Humans"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_MostResponders_humans_40pdanxamy.png", c, width=12, height=8)
+
+```
+
+
+
+
+
+
+
+
+
+
+```{r PCA 20% diff anx and amyg & most treated respond, eval=TRUE, message=FALSE}
+
+dfm <- data.frame(matrix(nrow=100, ncol=7))
+dfh <- data.frame(matrix(nrow=100, ncol=7))
+
+names(dfm) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+names(dfh) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+
+dfm$Subject <- c(1:nrow(dfm))
+dfm$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfm$Responder <- c(rep("Responder",40), rep("Nonresponder", 60))
+dfm$Anxiety <- c(rnorm(40, mean=31.1*1.2, sd=20.6),rnorm(60, mean=31.1, sd=20.6))
+dfm$Memory <- rnorm(nrow(dfm), mean=51.5, sd=18.6)
+dfm$Amygdala <- c(rnorm(40, mean=9.42*1.2, sd=.526),rnorm(60, mean=9.42, sd=.526))
+dfm$Striatum <- rnorm(nrow(dfm), mean=20, sd=1.09)
+dfm$Thalamus <- rnorm(nrow(dfm), mean=16.5, sd=0.917)
+
+dfh$Subject <- c(1:nrow(dfh))
+dfh$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfh$Responder <- c(rep("Responder",40), rep("Nonresponder", 60))
+dfh$Anxiety <- c(rnorm(40, mean=51.4*1.2, sd=17.7),rnorm(60, mean=51.4, sd=17.7))
+dfh$Memory <- rnorm(nrow(dfh), mean=39.8, sd=9.97)
+dfh$Amygdala <- c(rnorm(40, mean=1248*1.2, sd=220),rnorm(60, mean=1248, sd=220))
+dfh$Striatum <- rnorm(nrow(dfh), mean=8944, sd=1636)
+dfh$Thalamus <- rnorm(nrow(dfh), mean=6265, sd=999)
+
+
+
+
+#mice
+
+PCAb <- prcomp(dfm %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfm, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Most treated are moderate responders on two measures",atop(italic("Principle Component Analysis- Mice"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_MostResponders_mice_20pdanxamy.png", c, width=12, height=8)
+
+
+
+
+#humans
+
+PCAb <- prcomp(dfh %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfh, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Most treated are moderate responders on two measures",atop(italic("Principle Component Analysis- Humans"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_MostResponders_humans_20pdanxamy.png", c, width=12, height=8)
+
+```
+
+
+
+```{r PCA 10% diff anx and amyg & most treated, eval=TRUE, message=FALSE}
+
+dfm <- data.frame(matrix(nrow=100, ncol=7))
+dfh <- data.frame(matrix(nrow=100, ncol=7))
+
+names(dfm) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+names(dfh) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+
+dfm$Subject <- c(1:nrow(dfm))
+dfm$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfm$Responder <- c(rep("Responder",40), rep("Nonresponder", 60))
+dfm$Anxiety <- c(rnorm(40, mean=34.21, sd=20.6),rnorm(60, mean=31.1, sd=20.6))
+dfm$Memory <- rnorm(nrow(dfm), mean=51.5, sd=18.6)
+dfm$Amygdala <- c(rnorm(40, mean=10.362, sd=.526),rnorm(60, mean=9.42, sd=.526))
+dfm$Striatum <- rnorm(nrow(dfm), mean=20, sd=1.09)
+dfm$Thalamus <- rnorm(nrow(dfm), mean=16.5, sd=0.917)
+
+dfh$Subject <- c(1:nrow(dfh))
+dfh$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfh$Responder <- c(rep("Responder",40), rep("Nonresponder", 60))
+dfh$Anxiety <- c(rnorm(40, mean=56.54, sd=17.7),rnorm(60, mean=51.4, sd=17.7))
+dfh$Memory <- rnorm(nrow(dfh), mean=39.8, sd=9.97)
+dfh$Amygdala <- c(rnorm(40, mean=1372.8, sd=220),rnorm(60, mean=1248, sd=220))
+dfh$Striatum <- rnorm(nrow(dfh), mean=8944, sd=1636)
+dfh$Thalamus <- rnorm(nrow(dfh), mean=6265, sd=999)
+
+
+
+
+#mice
+
+PCAb <- prcomp(dfm %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfm, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Most treated are weak responders on two measures",atop(italic("Principle Component Analysis- Mice"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_MostResponders_mice_10pdanxamy.png", c, width=12, height=8)
+
+
+
+
+#humans
+
+PCAb <- prcomp(dfh %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfh, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Most treated are weak responders on two measures",atop(italic("Principle Component Analysis- Humans"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_MostResponders_humans_10pdanxamy.png", c, width=12, height=8)
+
+```
+
+
+
+
+```{r PCA 20% diff anx and amyg & subset treated respond, eval=TRUE, message=FALSE}
+
+dfm <- data.frame(matrix(nrow=100, ncol=7))
+dfh <- data.frame(matrix(nrow=100, ncol=7))
+
+names(dfm) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+names(dfh) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+
+dfm$Subject <- c(1:nrow(dfm))
+dfm$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfm$Responder <- c(rep("Responder",10), rep("Nonresponder", 90))
+dfm$Anxiety <- c(rnorm(10, mean=31.1*1.2, sd=20.6),rnorm(90, mean=31.1, sd=20.6))
+dfm$Memory <- rnorm(nrow(dfm), mean=51.5, sd=18.6)
+dfm$Amygdala <- c(rnorm(10, mean=9.42*1.2, sd=.526),rnorm(90, mean=9.42, sd=.526))
+dfm$Striatum <- rnorm(nrow(dfm), mean=20, sd=1.09)
+dfm$Thalamus <- rnorm(nrow(dfm), mean=16.5, sd=0.917)
+
+dfh$Subject <- c(1:nrow(dfh))
+dfh$Treatment <- c(rep("Tide",50), rep("Placebo", 50))
+dfh$Responder <- c(rep("Responder",40), rep("Nonresponder", 60))
+dfh$Anxiety <- c(rnorm(10, mean=51.4*1.2, sd=17.7),rnorm(90, mean=51.4, sd=17.7))
+dfh$Memory <- rnorm(nrow(dfh), mean=39.8, sd=9.97)
+dfh$Amygdala <- c(rnorm(10, mean=1248*1.2, sd=220),rnorm(90, mean=1248, sd=220))
+dfh$Striatum <- rnorm(nrow(dfh), mean=8944, sd=1636)
+dfh$Thalamus <- rnorm(nrow(dfh), mean=6265, sd=999)
+
+
+
+
+#mice
+
+PCAb <- prcomp(dfm %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfm, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Subset treated are moderate responders on two measures",atop(italic("Principle Component Analysis- Mice"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_SubsetResponders_mice_20pdanxamy.png", c, width=12, height=8)
+
+
+
+
+#humans
+
+PCAb <- prcomp(dfh %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfh, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Subset treated are moderate responders on two measures",atop(italic("Principle Component Analysis- Humans"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_SubsetResponders_humans_20pdanxamy.png", c, width=12, height=8)
+
+```
+
+
+
+
+
+
+
+
+```{r PCA 10% diff anx and amyg & most treated, eval=TRUE, message=FALSE}
+
+dfm <- data.frame(matrix(nrow=28, ncol=7))
+dfh <- data.frame(matrix(nrow=28, ncol=7))
+
+names(dfm) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+names(dfh) <- c("Subject", "Treatment", "Anxiety", "Memory", "Amygdala", "Striatum", "Thalamus")
+
+dfm$Subject <- c(1:nrow(dfm))
+dfm$Treatment <- c(rep("Tide",14), rep("Placebo", 14))
+dfm$Responder <- c(rep("Responder",11), rep("Nonresponder", 17))
+dfm$Anxiety <- c(rnorm(11, mean=31.1*1.4, sd=20.6),rnorm(17, mean=31.1, sd=20.6))
+dfm$Memory <- rnorm(nrow(dfm), mean=51.5, sd=18.6)
+dfm$Amygdala <- c(rnorm(11, mean=9.42*1.4, sd=.526),rnorm(17, mean=9.42, sd=.526))
+dfm$Striatum <- rnorm(nrow(dfm), mean=20, sd=1.09)
+dfm$Thalamus <- rnorm(nrow(dfm), mean=16.5, sd=0.917)
+
+dfh$Subject <- c(1:nrow(dfh))
+dfh$Treatment <- c(rep("Tide",14), rep("Placebo", 14))
+dfh$Responder <- c(rep("Responder",11), rep("Nonresponder", 17))
+dfh$Anxiety <- c(rnorm(11, mean=51.4*1.4, sd=17.7),rnorm(17, mean=51.4, sd=17.7))
+dfh$Memory <- rnorm(nrow(dfh), mean=39.8, sd=9.97)
+dfh$Amygdala <- c(rnorm(11, mean=1248*1.4, sd=220),rnorm(17, mean=1248, sd=220))
+dfh$Striatum <- rnorm(nrow(dfh), mean=8944, sd=1636)
+dfh$Thalamus <- rnorm(nrow(dfh), mean=6265, sd=999)
+
+
+
+
+#mice
+
+PCAb <- prcomp(dfm %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfm, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Most treated are strong responders on two measures",atop(italic("Principle Component Analysis- Mice"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_MostResponders_mice_10pdanxamy_smalln.png", c, width=12, height=8)
+
+
+
+
+#humans
+
+PCAb <- prcomp(dfh %>% select(-Subject,-Treatment, -Responder), scale=TRUE)
+
+summary(PCAb)
+
+
+plot(PCAb)
+
+c <- autoplot(PCAb, data=dfh, colour="Treatment", size=3, loadings=TRUE, loadings.colour="black", loadings.label=TRUE, loadings.label.size=7, loadings.label.colour="black", shape="Responder") 
+c <- c + theme_bw(35)
+c <- c + scale_colour_hue(guide=FALSE)
+c <- c + theme(legend.position="none")
+c <- c + theme(legend.title= element_text(size=35))
+#c <- c + theme(legend.text= element_text(size=20))
+c <- c + ggtitle(expression(atop("Most treated are strong responders on two measures",atop(italic("Principle Component Analysis- Humans"),"")))) +  theme(plot.title = element_text(size = 35, face="bold", hjust=0.5))
+c <- c + xlab("Component 1") + ylab("Component 2")
+c
+
+ggsave("CCP_Tideglusib_TestingML_PCA_NEW_MostResponders_humans_10pdanxamy_smalln.png", c, width=12, height=8)
+
+```
+
+
