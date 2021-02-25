@@ -32,6 +32,7 @@ library(RMINC)
 library("ggpubr")
 library("lme4")
 library(lenses)
+library(mvtnorm)
 #library("lme4", lib.loc="/axiom2/projects/software/arch/linux-xenial-xerus/RMINC/1.5.1.0") <- previously, but this errored so running above command 
 ```
 
@@ -1134,3 +1135,47 @@ ggsave("CCP_Tideglusib_TestingML_PCA_NEW_MostResponders_humans_10pdanxamy_smalln
 ```
 
 
+## Multivariate Simulations
+
+Now let's find out how able we are to detect responders if the responses are correlated
+
+```{r}
+mouse_means <- colMeans(micew[,c(19,11, 23,70, 73)])
+human_means <- colMeans(combw[,c(380, 381, 383, 436, 457)])
+
+mouse_covariance <- cov(micew[,c(19,11, 23,70, 73)])
+human_covariance <- cov(combw[,c(380, 381, 383, 436, 457)])
+
+n_mice   <- nrow(micew)
+n_humans <- nrow(combw)
+
+simulate_responders_with_pd <- function(prop_responders, percent_diff, n, mean, covariance){
+    ## Code to simulate some responders with a specific percent difference and a given mean and
+    ## covariance, example usage would be
+    ## simulate_responders_with_pd(.5, c(0, 0, 1, 0, 0), n_humans, human_means, human_covariance)
+    ## this would be 50% responders, with a percent diff of 100% in the right.thalamus, and no
+    ## response anywhere else. The vector argument to means must be named, otherwise this won't
+    ## work. If you wanted you could add some error checking. The percent diff and
+    ## covariance matrix must correspond to the mean vector so if you have 5 means, you need
+    ## 5 percent diffs and a 5x5 matrix of covariances.
+    
+    n_responders <- floor(prop_responders * n)
+    simulated_indivs <- as.data.frame(rmvnorm(n, mean, covariance))
+    simulated_indivs$responder <- c(rep(0, n - n_responders), rep(1, n_responders))
+    
+    response <-
+        (mean * percent_diff) %>%
+        data.frame(response = ., name = names(.))
+
+  
+    simulated_indivs %>%
+        mutate(indiv = 1:n()) %>%
+        pivot_longer(-c(responder,indiv)) %>%
+        inner_join(response) %>% 
+        mutate(value = value + response * responder) %>%
+        select(-response) %>%
+        pivot_wider(names_from = "name")
+}
+
+
+```
