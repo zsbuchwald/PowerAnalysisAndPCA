@@ -84,18 +84,25 @@ mice <- left_join(tf, ADE, by=c("Group", "ID", "Strain", "StrainW", "Genotype", 
 micec <- mice[complete.cases(mice$Labels),] 
 
 #Complete cases behav
-micecc <- micec%>% select(Group:YMBlockedPref,amygdala:brainvolumes) %>% filter(is.na(FCHabituation)==FALSE,
-       is.na(FCPostUS)==FALSE,        
-       is.na(FCContext)==FALSE,                                              
-       is.na(FCAltContext)==FALSE,                                            
-       is.na(FCCued)==FALSE,
-       is.na(OMRatioDur)==FALSE,                                                          is.na(OMRatioFreq)==FALSE,  
-       is.na(OMDistance)==FALSE,                                                          is.na(OMMoving)==FALSE,
-       is.na(OMRawOpenDur)==FALSE,                                                        is.na(OMRawOpenFreq)==FALSE,                                                       is.na(OFCenter)==FALSE,
-       is.na(OFDist)==FALSE,                                                              is.na(YMRawStart)==FALSE,  
-       is.na(YMRawOther)==FALSE,               
-       is.na(YMBlockedPref)==FALSE) 
-                                                             
+micecc <- micec %>%
+    select(Group:YMBlockedPref,amygdala:brainvolumes) %>%
+    filter(is.na(FCHabituation)==FALSE,
+           !is.na(FCPostUS),        
+           !is.na(FCContext),                                              
+           !is.na(FCAltContext),                                            
+           !is.na(FCCued),
+           !is.na(OMRatioDur),
+           !is.na(OMRatioFreq),  
+           !is.na(OMDistance),
+           !is.na(OMMoving),
+           !is.na(OMRawOpenDur),
+           !is.na(OMRawOpenFreq),
+           !is.na(OFCenter),
+           !is.na(OFDist),
+           !is.na(YMRawStart),  
+           !is.na(YMRawOther),               
+           !is.na(YMBlockedPref)) 
+           
                                                      
 
 
