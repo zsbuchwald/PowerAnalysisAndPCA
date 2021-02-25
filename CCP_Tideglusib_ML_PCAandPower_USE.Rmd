@@ -111,11 +111,11 @@ micecc <- micec %>%
 
 
 miceccp <- micecc %>% 
-  mutate(FCHabituation2= 1-FCHabituation,
-         FCPostUS2= 1-FCPostUS,
-         FCAltContext2= 1-FCAltContext,
-         YMRawStart2= 1-YMRawStart,
-         YMRawOther2= 1- YMRawOther) %>%
+  mutate(FCHabituation2= -FCHabituation,
+         FCPostUS2= -FCPostUS,
+         FCAltContext2= -FCAltContext,
+         YMRawStart2= -YMRawStart,
+         YMRawOther2= - YMRawOther) %>%
   select(-c(FCHabituation,FCPostUS,FCAltContext,YMRawStart,YMRawOther))
 
 ```
